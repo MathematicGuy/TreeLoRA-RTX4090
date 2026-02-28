@@ -65,14 +65,17 @@ class TaskHeadManager(nn.Module):
         self.hidden_dim = hidden_dim
         self.heads = nn.ModuleList()
 
-    def add_task(self, n_classes: int, device: torch.device):
-        head = nn.Linear(self.hidden_dim, n_classes).to(device)
+    def add_task(self, n_classes: int, device: torch.device,
+                 dtype: torch.dtype = torch.float32):
+        head = nn.Linear(self.hidden_dim, n_classes).to(device=device, dtype=dtype)
         nn.init.trunc_normal_(head.weight, std=0.02)
         nn.init.zeros_(head.bias)
         self.heads.append(head)
 
     def forward(self, features: torch.Tensor, task_id: int) -> torch.Tensor:
-        return self.heads[task_id](features)
+        # Cast features to head weight dtype (handles BF16/FP16 autocast)
+        head = self.heads[task_id]
+        return head(features.to(head.weight.dtype))
 
     def parameters_for_task(self, task_id: int):
         return self.heads[task_id].parameters()
@@ -151,10 +154,19 @@ class Tree_LoRA_ViT:
         args.use_opl     = getattr(args, 'use_opl',    True)
         self.kd_lora_tree = KD_LoRA_Tree(args)
 
-        #  AMP (mixed precision)
-        self.use_amp = (getattr(args, 'use_amp', False)
-                        and torch.cuda.is_available())
-        self.scaler  = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        #  Precision setup (BF16 > FP16 > FP32)
+        if getattr(args, 'bf16', False) and torch.cuda.is_bf16_supported():
+            self.amp_dtype = torch.bfloat16
+            self.use_amp   = True
+        elif getattr(args, 'fp16', False) or getattr(args, 'use_amp', False):
+            self.amp_dtype = torch.float16
+            self.use_amp   = True
+        else:
+            self.amp_dtype = torch.float32
+            self.use_amp   = False
+        # GradScaler only needed for FP16 — BF16 doesn't suffer from underflow
+        self.scaler = torch.amp.GradScaler(
+            'cuda', enabled=(self.use_amp and self.amp_dtype == torch.float16))
 
         #  Bookkeeping
         self.acc_matrix: Dict[int, Dict[int, float]] = {}   # acc_matrix[after_task][on_task]
@@ -167,7 +179,8 @@ class Tree_LoRA_ViT:
         print(f"  lora_depth: {getattr(args, 'lora_depth', -1)}")
         print(f"  reg       : {args.reg}")
         print(f"  lamda_1   : {self.lamda_1}")
-        print(f"  use_amp   : {self.use_amp}")
+        print(f"  precision : {self.amp_dtype} | AMP: {self.use_amp} | "
+              f"GradScaler: {self.scaler.is_enabled()}")
         param_info = count_trainable_params(self.model)
         print(f"  backbone trainable params: {param_info['trainable']:,} "
               f"/ {param_info['total']:,} ({100*param_info['ratio']:.2f}%)")
@@ -260,7 +273,7 @@ class Tree_LoRA_ViT:
         standard PyTorch backward instead of DeepSpeed.
         """
         n_classes = len(self.class_masks[task_id])
-        self.head_manager.add_task(n_classes, self.device)
+        self.head_manager.add_task(n_classes, self.device, self.amp_dtype)
 
         train_dl  = self.train_task_list[task]
         val_dl    = self.val_task_list[task]
@@ -298,8 +311,9 @@ class Tree_LoRA_ViT:
                 if self.args.reg > 0:
                     self.kd_lora_tree.step()
 
-                #  Forward (inside autocast for FP16 AMP)
-                with torch.amp.autocast('cuda', enabled=self.use_amp): # type: ignore
+                #  Forward in target dtype (BF16 / FP16 / FP32)
+                with torch.amp.autocast('cuda', dtype=self.amp_dtype,
+                                        enabled=self.use_amp): # type: ignore
                     features = self._get_features(images)
                     logits   = self.head_manager(features, task_id)
                     loss     = F.cross_entropy(logits, labels)
@@ -339,7 +353,7 @@ class Tree_LoRA_ViT:
 
                 pbar.set_postfix(loss=f"{loss.item():.4f}")
 
-
+				#! Comment cuda cache clean up if machine have enough VRAM
                 #?  VRAM guard
                 if step % 20 == 0:
                     torch.cuda.empty_cache()

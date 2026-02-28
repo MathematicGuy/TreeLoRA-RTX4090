@@ -105,9 +105,14 @@ def parse_args():
                              "pre-trained weights.")
 
     # ── Memory / speed optimisations ─────────────────────────────────────
-    parser.add_argument("--use_amp", action="store_true", default=True,
-                        help="Enable automatic mixed precision (FP16 AMP) to "
-                             "reduce VRAM usage by ~2x.")
+    parser.add_argument("--use_amp", action="store_true", default=False,
+                        help="Enable FP16 AMP (legacy). Prefer --bf16 on RTX 4090.")
+    prec = parser.add_mutually_exclusive_group()
+    prec.add_argument("--bf16", action="store_true", default=False,
+                      help="Use BF16 mixed precision (recommended for RTX 4090). "
+                           "No GradScaler needed, same VRAM saving as FP16.")
+    prec.add_argument("--fp16", action="store_true", default=False,
+                      help="Use FP16 mixed precision (requires GradScaler).")
     parser.add_argument("--grad_checkpoint", action="store_true", default=True,
                         help="Enable gradient checkpointing on the ViT encoder "
                              "to trade compute for ~40%% additional VRAM savings.")
@@ -155,9 +160,36 @@ def build_model(args):
     from transformers import ViTModel
     from model.lora_vit import inject_lora_vit_hf, freeze_non_lora
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     print(f"\n[main_vit] Loading backbone architecture: {args.vit_model}")
+
+    # ── Choose dtype ─────────────────────────────────────────────────
+    if getattr(args, 'bf16', False) and torch.cuda.is_bf16_supported():
+        load_dtype = torch.bfloat16
+        print("[main_vit] Precision: BF16 (recommended for RTX 4090)")
+    elif getattr(args, 'fp16', False):
+        load_dtype = torch.float16
+        print("[main_vit] Precision: FP16")
+    else:
+        load_dtype = torch.float32
+        print("[main_vit] Precision: FP32")
+
     # Use ViTModel (no classification head) so we control the head ourselves
-    model = ViTModel.from_pretrained(args.vit_model)
+    # Load directly in target dtype → no extra FP32 copy in VRAM
+    model = ViTModel.from_pretrained(args.vit_model, torch_dtype=load_dtype)
 
     # ── Optionally override with iBOT / timm weights ───────────────────
     if getattr(args, 'ibot_checkpoint', None):
@@ -211,15 +243,12 @@ def build_datasets(args):
         augment=not args.no_augment,
         seed=args.seed,
         val_split=args.val_split,
-		pin_memory   = True,               # fast CPU→GPU transfer
-		prefetch_factor = 4,               # each worker pre-loads 4 batches into RAM
-		persistent_workers = True,         # keep workers alive between epochs
 	)
 
     if args.benchmark == "split_cifar100":
-        return build_split_cifar100(**common_kwargs)
+        return build_split_cifar100(**common_kwargs) # type: ignore
     elif args.benchmark == "split_cub200":
-        return build_split_cub200(**common_kwargs)
+        return build_split_cub200(**common_kwargs) # type: ignore
     else:
         raise ValueError(f"Unknown benchmark: {args.benchmark}")
 

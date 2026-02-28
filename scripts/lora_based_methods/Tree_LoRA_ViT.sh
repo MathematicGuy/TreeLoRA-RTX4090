@@ -15,28 +15,22 @@
 
 set -euo pipefail
 
-# ── Time stamp ──────────────────────────────────────────────────────────────
+#  Time stamp
 now=$(date +"%m%d_%H%M%S")
 
-# ── CPU / memory optimisations ───────────────────────────────────────────────
+#  CPU / memory optimisations
 # i7-13700K: 8 P-cores + 16 E-cores = 24 threads
 # Use ALL cores for DataLoader workers (offload preprocessing to CPU)
 NUM_WORKERS=10        # safe ceiling: leaves 4 threads for main + GPU driver
 
-# Pin workers to physical cores (avoids hyperthreading contention)
-export OMP_NUM_THREADS=4
-export MKL_NUM_THREADS=4
+# GPU VRAM protection
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-# ── GPU ─────────────────────────────────────────────────────────────────────
-
-# VRAM protection
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
-
-# ONE process only (kill the other 4 first — see below)
-export CUDA_VISIBLE_DEVICES=2
+# ONE process only
+export CUDA_VISIBLE_DEVICES=0
 
 
-# ── Benchmark selection ──────────────────────────────────────────────────────
+#  Benchmark selection
 BENCHMARK=${BENCHMARK:-split_cifar100}   # override with env var if needed
 
 if [ "$BENCHMARK" = "split_cifar100" ]; then
@@ -57,7 +51,7 @@ else
     exit 1
 fi
 
-# ── Model ────────────────────────────────────────────────────────────────────
+#  Model
 # Paper uses iBOT ViT-B/16 pretrained on ImageNet-21K (self-supervised).
 # Download the checkpoint from https://github.com/bytedance/ibot and convert,
 # or point to a locally cached copy:
@@ -69,31 +63,31 @@ VIT_MODEL="google/vit-base-patch16-224-in21k"
 # Set to "" to skip and use the HuggingFace pre-trained weights.
 IBOT_CHECKPOINT="./model/checkpoint_student"
 
-# ── LoRA hyper-params ────────────────────────────────────────────────────────
+#  LoRA hyper-params
 LORA_R=8
 LORA_ALPHA=32
 LORA_DROPOUT=0.1
 # Paper tree depth = 5 for ViTs
 LORA_DEPTH=5
 
-# ── TreeLoRA hyper-params ────────────────────────────────────────────────────
+#  TreeLoRA hyper-params
 # Paper: λ = 0.5, same as LLM experiments
 REG=0.5
 LAMDA_1=0.5
 OPL_WEIGHT=0.1
 
-# ── Optimiser ────────────────────────────────────────────────────────────────
+#  Optimiser
 # Paper: constant LR = 0.005, Adam β1=0.9 β2=0.999
 LR=5e-3
 WEIGHT_DECAY=0.0
 
-# ── Reproducibility ──────────────────────────────────────────────────────────
+#  Reproducibility
 SEED=1234
 
-# ── Output ───────────────────────────────────────────────────────────────────
+#  Output
 OUTPUT_DIR="./outputs_LLM-CL/cl/ViT/Tree_LoRA_${BENCHMARK}_${now}"
 
-# ── Run ──────────────────────────────────────────────────────────────────────
+#  Run
 echo "=================================================="
 echo " TreeLoRA ViT  |  benchmark : $BENCHMARK"
 echo " backbone      : $VIT_MODEL  (iBOT: $IBOT_CHECKPOINT)"
@@ -118,13 +112,13 @@ python training/main_vit.py \
     $IBOT_FLAG                    \
     --lora_r       "$LORA_R"      \
     --lora_alpha   "$LORA_ALPHA"  \
---lora_dropout "$LORA_DROPOUT"\
+	--lora_dropout "$LORA_DROPOUT"\
     --lora_depth   "$LORA_DEPTH"  \
     --reg          "$REG"         \
     --lamda_1      "$LAMDA_1"     \
     --opl_weight   "$OPL_WEIGHT"  \
     --use_opl                     \
-    --use_amp                     \
+    --bf16                        \
     --grad_checkpoint             \
     --epochs       "$EPOCHS"      \
     --batch_size   "$BATCH_SIZE"  \

@@ -81,11 +81,14 @@ class LoRALinear(nn.Module):
 
         xd = self.dropout(x)
 
+        # Cast frozen weights to match input dtype (e.g. BF16 / FP16 under autocast)
+        dtype = xd.dtype
+
         # Previous task contribution (frozen, nonzero after task 0 is committed)
-        result = result + (xd @ self.lora_A.T @ self.lora_B.T) * self.scaling
+        result = result + (xd @ self.lora_A.to(dtype).T @ self.lora_B.to(dtype).T) * self.scaling
 
         # Current task contribution (trainable)
-        result = result + (xd @ self.loranew_A.T @ self.loranew_B.T) * self.scaling
+        result = result + (xd @ self.loranew_A.to(dtype).T @ self.loranew_B.to(dtype).T) * self.scaling
 
         return result
 
