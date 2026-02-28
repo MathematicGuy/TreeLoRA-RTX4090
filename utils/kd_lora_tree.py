@@ -649,8 +649,8 @@ class KD_LoRA_Tree:
         reg_loss = reg_loss / (reg_loss.detach().clone().abs() + 1e-5) * loss.detach().clone() * self.tmp_reg
 
         #? Add OPL component if enabled
-        if self.use_opl and task_id > 0:
-            opl_loss = self._compute_opl_loss(_grad_current, task_id, prev_id_matrix)
+        if self.use_opl and task_id > 0: # need similarity score
+            opl_loss = self._compute_opl_loss(_grad_current, task_id, prev_id_matrix) # why use prev_id_matrix here ?
 
             # Sca le OPL loss relative to task loss
             if opl_loss.abs() > 1e-8:

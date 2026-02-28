@@ -297,7 +297,7 @@ class Tree_LoRA(CL_Base_Model):
                             self.tiktok.tik()
                             prev_id_matrix = self.kd_lora_tree.tree_search(
                                 task_id, device=self.device
-                            ) 
+                            )
                             self.tiktok.tok(f"Tree_Search_@Task{task_id}_Epoch{epoch}")
 
                             # Compute combined loss (similarity + OPL)
