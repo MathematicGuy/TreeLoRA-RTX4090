@@ -652,7 +652,7 @@ class KD_LoRA_Tree:
         if self.use_opl and task_id > 0:
             opl_loss = self._compute_opl_loss(_grad_current, task_id, prev_id_matrix)
 
-            # Scale OPL loss relative to task loss
+            # Sca le OPL loss relative to task loss
             if opl_loss.abs() > 1e-8:
                 opl_loss = opl_loss * loss.detach().clone() * self.opl_weight
                 reg_loss = reg_loss + opl_loss

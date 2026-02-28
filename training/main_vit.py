@@ -211,7 +211,10 @@ def build_datasets(args):
         augment=not args.no_augment,
         seed=args.seed,
         val_split=args.val_split,
-    )
+		pin_memory   = True,               # fast CPU→GPU transfer
+		prefetch_factor = 4,               # each worker pre-loads 4 batches into RAM
+		persistent_workers = True,         # keep workers alive between epochs
+	)
 
     if args.benchmark == "split_cifar100":
         return build_split_cifar100(**common_kwargs)

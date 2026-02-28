@@ -18,10 +18,23 @@ set -euo pipefail
 # ── Time stamp ──────────────────────────────────────────────────────────────
 now=$(date +"%m%d_%H%M%S")
 
+# ── CPU / memory optimisations ───────────────────────────────────────────────
+# i7-13700K: 8 P-cores + 16 E-cores = 24 threads
+# Use ALL cores for DataLoader workers (offload preprocessing to CPU)
+NUM_WORKERS=10        # safe ceiling: leaves 4 threads for main + GPU driver
+
+# Pin workers to physical cores (avoids hyperthreading contention)
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+
 # ── GPU ─────────────────────────────────────────────────────────────────────
-export CUDA_VISIBLE_DEVICES=0
-# Reduce memory fragmentation (fixes "reserved but unallocated" OOM)
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# VRAM protection
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:512
+
+# ONE process only (kill the other 4 first — see below)
+export CUDA_VISIBLE_DEVICES=2
+
 
 # ── Benchmark selection ──────────────────────────────────────────────────────
 BENCHMARK=${BENCHMARK:-split_cifar100}   # override with env var if needed
@@ -105,7 +118,7 @@ python training/main_vit.py \
     $IBOT_FLAG                    \
     --lora_r       "$LORA_R"      \
     --lora_alpha   "$LORA_ALPHA"  \
-    --lora_dropout "$LORA_DROPOUT"\
+--lora_dropout "$LORA_DROPOUT"\
     --lora_depth   "$LORA_DEPTH"  \
     --reg          "$REG"         \
     --lamda_1      "$LAMDA_1"     \
@@ -119,7 +132,7 @@ python training/main_vit.py \
     --weight_decay "$WEIGHT_DECAY"\
     --seed         "$SEED"        \
     --output_dir   "$OUTPUT_DIR"  \
-    --num_workers  4
+    --num_workers  $NUM_WORKERS
 
 echo ""
 echo "=================================================="

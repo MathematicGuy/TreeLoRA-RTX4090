@@ -7,16 +7,16 @@ unchanged from ``utils.kd_lora_tree.KD_LoRA_Tree``.
 
 Architecture
 ------------
-                ┌─────────────────────────────┐
+                ┌┐
                 │  Frozen ViT backbone         │
                 │  + LoRALinear adapters        │
                 │    loranew_A / loranew_B      │  ← trainable each task
-                └─────────────┬───────────────┘
+                └┬┘
                               │  features
-                ┌─────────────▼───────────────┐
+                ┌▼┐
                 │  Task heads  (one per task)  │  ← always trainable
                 │  nn.Linear(hidden, n_cls_t)  │
-                └─────────────────────────────┘
+                └┘
 
 Training flow per task t
 ------------------------
@@ -139,24 +139,24 @@ class Tree_LoRA_ViT:
                                    if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
 
-        # ── Task heads ──────────────────────────────────────────────────
+        #  Task heads
         # Infer hidden_dim from the model
         self.hidden_dim = self._get_hidden_dim()
         self.head_manager = TaskHeadManager(self.hidden_dim).to(self.device)
 
-        # ── KD-LoRA tree ─────────────────────────────────────────────────
+        #  KD-LoRA tree
         args.num_tasks  = len(train_task_list)
         args.global_rank = 0                         # single-GPU, no dist
         args.opl_weight  = getattr(args, 'opl_weight', 0.1)
         args.use_opl     = getattr(args, 'use_opl',    True)
         self.kd_lora_tree = KD_LoRA_Tree(args)
 
-        # ── AMP (mixed precision) ────────────────────────────────────────
+        #  AMP (mixed precision)
         self.use_amp = (getattr(args, 'use_amp', False)
                         and torch.cuda.is_available())
         self.scaler  = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 
-        # ── Bookkeeping ──────────────────────────────────────────────────
+        #  Bookkeeping
         self.acc_matrix: Dict[int, Dict[int, float]] = {}   # acc_matrix[after_task][on_task]
         self.best_acc_per_task: Dict[int, float] = {}       # recorded right after training
 
@@ -290,6 +290,7 @@ class Tree_LoRA_ViT:
             epoch_task_loss = 0.0
             epoch_reg_loss  = 0.0
 
+
             for step, (images, labels) in enumerate(pbar):
                 images  = images.to(self.device, non_blocking=True)
                 labels  = labels.to(self.device, non_blocking=True)
@@ -297,7 +298,7 @@ class Tree_LoRA_ViT:
                 if self.args.reg > 0:
                     self.kd_lora_tree.step()
 
-                # ── Forward (inside autocast for FP16 AMP) ───────────────
+                #  Forward (inside autocast for FP16 AMP)
                 with torch.amp.autocast('cuda', enabled=self.use_amp): # type: ignore
                     features = self._get_features(images)
                     logits   = self.head_manager(features, task_id)
@@ -305,7 +306,7 @@ class Tree_LoRA_ViT:
 
                 epoch_task_loss += loss.item()
 
-                # ── TreeLoRA regularisation ───────────────────────────────
+                #  TreeLoRA regularisation
                 if self.args.reg > 0:
                     _grad_current = self._extract_lora_gradients()
 
@@ -323,7 +324,7 @@ class Tree_LoRA_ViT:
                             loss = loss - self.lamda_1 * reg_loss
                             epoch_reg_loss += reg_loss.item() if torch.is_tensor(reg_loss) else reg_loss
 
-                # ── Backward with AMP scaler ─────────────────────────────
+                #  Backward with AMP scaler
                 optimizer.zero_grad()
                 self.scaler.scale(loss).backward()
 
@@ -338,16 +339,34 @@ class Tree_LoRA_ViT:
 
                 pbar.set_postfix(loss=f"{loss.item():.4f}")
 
+
+                #?  VRAM guard
+                if step % 20 == 0:
+                    torch.cuda.empty_cache()
+
+                #?  VRAM overflow early warning
+                if step % 100 == 0 and torch.cuda.is_available():
+                    used  = torch.cuda.memory_reserved() / 1e9
+                    total = torch.cuda.get_device_properties(0).total_memory / 1e9
+                    if used / total > 0.90:
+                        print(f"\n[VRAM WARNING] {used:.1f}/{total:.1f} GB "
+                            f"({100*used/total:.0f}%) — approaching limit!")
+                        torch.cuda.empty_cache()
+
+            #  End of epoch: full cleanup
+            torch.cuda.empty_cache()
+            import gc; gc.collect()
+
             # Epoch summary
             n = len(train_dl)
             print(f"  Epoch {epoch+1}/{epochs} | task_loss={epoch_task_loss/n:.4f} "
-                  f"| reg_loss={epoch_reg_loss/n:.4f}")
+                f"| reg_loss={epoch_reg_loss/n:.4f}")
 
             # Validation accuracy
             val_acc = self.evaluate_task(task, task_id, val_dl)
             print(f"  Val acc (task {task_id}): {val_acc*100:.2f}%")
 
-        # ── Post-task bookkeeping ───────────────────────────────────────
+        #  Post-task bookkeeping
         # Record best accuracy
         test_acc = self.evaluate_task(task, task_id, self.test_task_list[task])
         self.best_acc_per_task[task_id] = test_acc
@@ -521,6 +540,10 @@ def load_vit_checkpoint(model: nn.Module, checkpoint_path: str) -> nn.Module:
       masked_embed                     → SKIPPED
     """
     print(f"[load_vit_checkpoint] Loading from {checkpoint_path}")
+    # Auto-append .pth extension if the bare path doesn't exist
+    if not os.path.exists(checkpoint_path) and os.path.exists(checkpoint_path + ".pth"):
+        checkpoint_path = checkpoint_path + ".pth"
+        print(f"[load_vit_checkpoint] Resolved to {checkpoint_path}")
     raw = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     sd  = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
     print(f"[load_vit_checkpoint] {len(sd)} tensors in checkpoint")
@@ -529,12 +552,12 @@ def load_vit_checkpoint(model: nn.Module, checkpoint_path: str) -> nn.Module:
     skipped: list = []
 
     for k, v in sd.items():
-        # ── skip iBOT-specific tokens ────────────────────────────────────
+        #  skip iBOT-specific tokens
         if k in ("masked_embed",):
             skipped.append(k)
             continue
 
-        # ── embedding layer ──────────────────────────────────────────────
+        #  embedding layer
         if k == "cls_token":
             hf["embeddings.cls_token"] = v; continue
         if k == "pos_embed":
@@ -544,13 +567,13 @@ def load_vit_checkpoint(model: nn.Module, checkpoint_path: str) -> nn.Module:
         if k == "patch_embed.proj.bias":
             hf["embeddings.patch_embeddings.projection.bias"] = v; continue
 
-        # ── final layer norm ─────────────────────────────────────────────
+        #  final layer norm
         if k == "norm.weight":
             hf["layernorm.weight"] = v; continue
         if k == "norm.bias":
             hf["layernorm.bias"] = v; continue
 
-        # ── transformer blocks ───────────────────────────────────────────
+        #  transformer blocks
         m = _re.match(r"blocks\.(\d+)\.(.*)", k)
         if not m:
             skipped.append(k); continue
