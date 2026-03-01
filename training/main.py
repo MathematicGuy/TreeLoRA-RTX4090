@@ -179,7 +179,7 @@ def parse_args():
         type=int,
         default=0,
         help='ZeRO optimization stage for Actor model (and clones).')
-    
+
     ## Tensorboard logging
     parser.add_argument('--enable_tensorboard',
                         action='store_true',
@@ -188,22 +188,25 @@ def parse_args():
                         type=str,
                         default="step1_tensorboard")
     ## Print loss
+    parser.add_argument('--bf16',
+                        action='store_true',
+                        help='Enable bfloat16 training.')
     parser.add_argument('--print_loss',
                         action='store_true',
                         help='Prints loss at each step.')
     parser.add_argument('--print_tiktok',
                         action='store_true',
                         help='Prints tiktok at each step.')
-    
+
     parser.add_argument('--CL_method',
                 default=None,
                 help='continual learning method used')
-    
+
     parser.add_argument('--reg',
                         default=0.0,
                         type=float,
                         help='regularization term used in continual learning')
-    
+
     parser.add_argument('--lora_depth',
                         default=-1,
                         type=int,
@@ -263,6 +266,7 @@ def main():
                                     enable_tensorboard=args.enable_tensorboard,
                                     tb_path=args.tensorboard_path,
                                     tb_name="v2_sft")
+    ds_config["bfloat16"]["enabled"] = args.bf16
     # set batch size
     ds_config[
         'train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
@@ -286,13 +290,13 @@ def main():
                             ds_config=ds_config,
                             disable_dropout=args.disable_dropout
                             )
-    
+
     # # replace SiLU with ReLU
     # replace_silu_with_relu(model)
-    
+
     # print_rank_0(model, args.global_rank)
-    
-    
+
+
     # some CL methods can be realized by peft
     if args.CL_method == "LFPT5":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
@@ -321,10 +325,10 @@ def main():
                 param.requires_grad = True
             elif name.find("lora_") != -1:
                 param.requires_grad = False
-    
+
     if args.CL_method == "Hide_LoRA":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
-        
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
         )
@@ -334,10 +338,10 @@ def main():
                 param.requires_grad = True
             elif name.find("lora_") != -1:
                 param.requires_grad = False
-    
+
     if args.CL_method == "Tree_LoRA":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
-        
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
         )
@@ -347,11 +351,11 @@ def main():
                 param.requires_grad = True
             elif name.find("lora_") != -1:
                 param.requires_grad = False
-    
+
     if args.CL_method == "OGD":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
         # from utils.my_peft import get_peft_model, LoraConfig, TaskType
-        
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
         )
@@ -407,7 +411,7 @@ def main():
     if args.CL_method == "lora":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
         # from utils.my_peft import get_peft_model, LoraConfig, TaskType
-        
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
         )
@@ -418,10 +422,10 @@ def main():
             elif name.find("lora_") != -1:
                 param.requires_grad = False  # previous loras are not trained
 
-    
+
     # print blue color:
     print_rank_0(f"\033[34m***** Model:\n {model} *****\033[0m", args.global_rank)
-    
+
     train_task_list = {}
     eval_task_list = {}
     test_task_list = {}
@@ -472,7 +476,7 @@ def main():
             pad_to_multiple_of=8,
             inference=True
         )
-                
+
 
         train_dataloader = DataLoader(train_dataset,
                                     collate_fn=data_collator,
@@ -519,13 +523,13 @@ def main():
         # Split weights in two groups, one with weight decay and the other not.
         optimizer_grouped_parameters = get_optimizer_grouped_parameters(
             model, args.weight_decay)
-        
+
         # AdamOptimizer = DeepSpeedCPUAdam if args.offload else FusedAdam
         AdamOptimizer = torch.optim.Adam
         optimizer = AdamOptimizer(optimizer_grouped_parameters,
                                 lr=args.learning_rate,
                                 betas=(0.9, 0.95))
-        
+
         total_train_dataloader_len = sum(len(train_task_list[task]) for task in list(train_task_list.keys()))
         num_update_steps_per_epoch = math.ceil(
             total_train_dataloader_len / args.gradient_accumulation_steps)
@@ -533,37 +537,37 @@ def main():
             optimizer=optimizer,
             num_warmup_steps=args.num_warmup_steps
         )
-        
+
         return optimizer, lr_scheduler
-    
+
     if args.CL_method == "DualPrompt":
         if "opt" in args.model_name_or_path.lower():
             embed_tokens_shape = model.model.decoder.embed_tokens.weight.shape
             embed_tokens = model.model.decoder.embed_tokens
-            
+
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
         elif "llama" in args.model_name_or_path.lower():
             embed_tokens_shape = model.model.embed_tokens.weight.shape
             embed_tokens = model.model.embed_tokens
-            
+
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
-        
+
         elif "qwen" in args.model_name_or_path.lower():
             embed_tokens_shape = model.model.embed_tokens.weight.shape
             embed_tokens = model.model.embed_tokens
-            
+
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
-        
+
         elif "mistral" in args.model_name_or_path.lower():
             embed_tokens_shape = model.model.embed_tokens.weight.shape
             embed_tokens = model.model.embed_tokens
-            
+
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
@@ -573,7 +577,7 @@ def main():
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
-        
+
         if args.CL_method == "DualPrompt":
             args.train_task_list = args.dataset_name
             args.pool_size = 10
@@ -584,7 +588,7 @@ def main():
             for name, params in model.named_parameters():
                 if "prompt" not in name:
                     params.requires_grad = False
-                    
+
 
     optimizer, lr_scheduler = get_optimizer(model)
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
@@ -605,14 +609,14 @@ def main():
     #     args.global_rank)
     # perplexity = evaluation(model, eval_dataloader)
     # print_rank_0(f"ppl: {perplexity}", args.global_rank)
-    
+
     def is_serializable(obj):
         try:
             json.dumps(obj)
             return True
         except TypeError:
             return False
-        
+
     # save args to output_dir:
     if args.output_dir is not None:
         # os.makedirs(args.output_dir, exist_ok=True)
@@ -628,8 +632,8 @@ def main():
             json.dump(serializable_args, f, indent=4)
             # copy ./model folder to tb_dir:
             os.system(f'cp -r -p model {args.output_dir}')
-        
-        
+
+
 
     # Initialize the global progress bar
 

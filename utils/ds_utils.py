@@ -38,12 +38,7 @@ def get_train_ds_config(offload,
         "steps_per_print": 10,
         "zero_optimization": zero_opt_dict,
         "bfloat16": {
-            "enabled": "auto",
-            "loss_scale": 0,
-            "loss_scale_window": 1000,
-            "initial_scale_power": 16,
-            "hysteresis": 2,
-            "min_loss_scale": 1
+            "enabled": False
         },
         "gradient_clipping": 1.0,
         "prescale_gradients": False,
